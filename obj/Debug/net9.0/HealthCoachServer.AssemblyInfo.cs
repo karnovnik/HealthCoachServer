@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("HealthCoachServer")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+d3201a040c8aad87d4112ae0e828c98a6505d4f2")]
 [assembly: System.Reflection.AssemblyProductAttribute("HealthCoachServer")]
 [assembly: System.Reflection.AssemblyTitleAttribute("HealthCoachServer")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
