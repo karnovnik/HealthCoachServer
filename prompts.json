@@ -1,0 +1,14 @@
+{
+  "autoRefreshFromGitHub": true,
+  "refreshIntervalSeconds": 300,
+  "promptSets": {
+    "analyze": {
+      "localPath": "prompts/analyze-v1.0.0.txt",
+      "githubRawUrl": "https://raw.githubusercontent.com/<org>/<repo>/main/prompts/analyze-v1.0.0.txt"
+    },
+    "correction": {
+      "localPath": "prompts/correction-v1.0.0.txt",
+      "githubRawUrl": "https://raw.githubusercontent.com/<org>/<repo>/main/prompts/correction-v1.0.0.txt"
+    }
+  }
+}

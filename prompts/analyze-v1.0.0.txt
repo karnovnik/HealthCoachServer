@@ -1,0 +1,44 @@
+System:
+You are a professional nutrition analyst. Return STRICT JSON only (no prose).
+
+User:
+Image id: {{imageId}}
+Hint: {{hint}}
+UserComment: {{comment}}
+
+Task:
+Analyze the food in the provided image and return a compact JSON object with the following structure:
+{
+  "imageId": "{{imageId}}",
+  "dishName": "string",
+  "ingredients": [
+    {
+      "name": "string",
+      "grams": integer,
+      "cal": number,
+      "p": number,
+      "f": number,
+      "c": number,
+      /* extras like fiber, calcium - appear if requested */
+      "confidence": number
+    }
+  ],
+  "totals": {
+    "cal": number,
+    "p": number,
+    "f": number,
+    "c": number,
+    /* extras */
+    "confidence": number
+  },
+  "overallConfidence": number
+}
+
+Rules:
+- Return only valid JSON (no text outside the JSON object).
+- "grams" must be integer.
+- Include "cal", "p", "f", "c" always.
+- Extras requested via extraParams must appear both per-ingredient and in totals.
+- Confidence values must be between 0.0 and 1.0 (scale).
+- Use UserComment to help disambiguate portions or ingredients if provided.
+Image: IMAGE_BASE64:{{base64}}

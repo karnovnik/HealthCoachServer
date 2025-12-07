@@ -1,169 +1,113 @@
-using System.Diagnostics;
-using HealthCoachServer;
+using System.Text.Json;
 using HealthCoachServer.Services;
-using HealthCoachServer.Models;
-
 
 var builder = WebApplication.CreateBuilder(args);
 
-
-// Configuration and services
+// Register services
+builder.Services.AddHttpClient("PromptLoader");
+builder.Services.AddSingleton<PromptLoader>();
+builder.Services.AddSingleton<ILlmService, LlmServiceStub>(); // replace stub with real implementation
+builder.Services.AddSingleton<IPromptBuilder, PromptBuilder>();
+builder.Services.AddLogging();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
-builder.Services.AddHttpClient();
-builder.Services.AddSingleton<LlmService>();
-builder.Services.AddSingleton<BlobLogger>();
-
 
 var app = builder.Build();
+
 app.UseSwagger();
 app.UseSwaggerUI();
 
-
-// Simple API key middleware
-app.Use(async (context, next) =>
-{
-    var configured = builder.Configuration["API_KEY"];
-    if (string.IsNullOrEmpty(configured))
-    {
-        await next();
-        return;
-    }
-
-    var header = context.Request.Headers["X-Api-Key"].FirstOrDefault();
-    if (!string.IsNullOrEmpty(header) && header == configured)
-        await next();
-    else
-    {
-        context.Response.StatusCode = 401;
-        await context.Response.WriteAsync("Unauthorized");
-    }
-});
-
-
-// Configurable limits
-var maxFiles = int.TryParse(builder.Configuration["MAX_FILES_PER_REQUEST"], out var mf) ? mf : 5;
-var maxBytes = int.TryParse(builder.Configuration["MAX_BYTES_PER_FILE"], out var mb) ? mb : 700 * 1024;
-var maxParallel = int.TryParse(builder.Configuration["MAX_CONCURRENT_LLM_CALLS"], out var mp) ? mp : 3;
-
+// var promptLoader = app.Services.GetRequiredService<PromptLoader>();
+var llm = app.Services.GetRequiredService<ILlmService>();
+var logger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Program");
 
 app.MapGet("/", () => Results.Ok(new { status = "ok" }));
 
-app.MapPost("/analyze", async (HttpRequest req, LlmService llm, BlobLogger blobLogger, ILogger<Program> log) =>
+app.MapPost("/analyze", async (HttpRequest request, PromptBuilder promptBuilder) =>
 {
-    if (!req.HasFormContentType) return Results.BadRequest(new { error = "multipart/form-data required" });
-    var form = await req.ReadFormAsync();
-    var files = form.Files;
-    if (files == null || files.Count == 0) return Results.BadRequest(new { error = "no files" });
-    if (files.Count > maxFiles) return Results.BadRequest(new { error = $"max {maxFiles} files" });
-
-
-    var userIdRaw = form["userId"].FirstOrDefault() ?? "anon";
-    var userId = Utilities.HashIfNeeded(userIdRaw);
-    var hint = form["hint"].FirstOrDefault() ?? string.Empty;
-    var extraParams = Utilities.ParseExtraParams(form["extraParams"].FirstOrDefault() ?? string.Empty);
-
-
-    var requestId = Guid.NewGuid().ToString();
-    var semaphore = new SemaphoreSlim(maxParallel);
-    var tasks = new List<Task<AnalyzeResultDto>>();
-
-
-    foreach (var file in files)
+    var getPromptOperation = await promptBuilder.BuildAnalyzePromptAsync(request);
+    if (getPromptOperation.IsCancelled)
     {
-        tasks.Add(Task.Run(async () =>
-        {
-            var dto = new AnalyzeResultDto();
-            if (file == null || file.Length == 0)
-            {
-                dto.ImageId = null;
-                dto.Status = "error";
-                dto.Error = "empty file";
-                return dto;
-            }
-
-            if (file.Length > maxBytes)
-            {
-                dto.ImageId = null;
-                dto.Status = "error";
-                dto.Error = $"file too large (max {maxBytes} bytes)";
-                dto.ReceivedBytes = file.Length;
-                return dto;
-            }
-
-
-// Read bytes and compute imageId
-            byte[] bytes;
-            string imageId;
-            await using (var ms = new MemoryStream())
-            {
-                await file.CopyToAsync(ms);
-                bytes = ms.ToArray();
-                ms.Position = 0;
-                using var sha = System.Security.Cryptography.SHA256.Create();
-                imageId = Convert.ToHexString(sha.ComputeHash(ms)).ToLowerInvariant();
-            }
-
-
-            await semaphore.WaitAsync();
-            try
-            {
-                var sw = Stopwatch.StartNew();
-                var analysis = await llm.AnalyzeImageAsync(bytes, imageId, hint, extraParams, userId);
-                sw.Stop();
-
-
-// persist raw response if present
-                string blobPath = null;
-                if (!string.IsNullOrEmpty(analysis.RawResponse) && blobLogger.IsConfigured)
-                {
-                    try
-                    {
-                        blobPath = await blobLogger.SaveRawAsync(requestId, userId, imageId, bytes.Length,
-                            analysis.RawResponse);
-                    }
-                    catch (Exception ex)
-                    {
-                        log.LogWarning(ex, "blob save failed");
-                    }
-                }
-
-
-                if (analysis.Success)
-                {
-                    dto.ImageId = imageId;
-                    dto.Status = "ok";
-                    dto.Result = Utilities.TryParseJsonOrString(analysis.AssistantText);
-                    dto.BlobPath = blobPath;
-                    dto.LatencyMs = sw.ElapsedMilliseconds;
-                    dto.TotalTokens = analysis.TotalTokens;
-                }
-                else
-                {
-                    dto.ImageId = imageId;
-                    dto.Status = "error";
-                    dto.Error = analysis.Error ?? "llm error";
-                    dto.BlobPath = blobPath;
-                    dto.LatencyMs = sw.ElapsedMilliseconds;
-                }
-
-
-                log.LogInformation(
-                    "analyze: req={Req} user={User} image={Image} status={Status} ms={Ms} tokens={Tokens} blob={Blob}",
-                    requestId, userId, imageId, dto.Status, dto.LatencyMs, dto.TotalTokens ?? -1, blobPath);
-                return dto;
-            }
-            finally
-            {
-                semaphore.Release();
-            }
-        }));
+        return Results.BadRequest(new { error = getPromptOperation.Error });
     }
 
+    var prompt = getPromptOperation.Result;
+    logger.LogInformation("Calling LLM for /analyze prompt = {Prompt}.", prompt);
 
-    var results = await Task.WhenAll(tasks);
-    return Results.Ok(new { requestId, results });
+    LlmResponse llmResp;
+    try
+    {
+        llmResp = await llm.CallRawAsync(prompt, CancellationToken.None);
+    }
+    catch (Exception ex)
+    {
+        logger.LogError(ex, "LLM call failed");
+        return Results.StatusCode(502);
+    }
+
+    try
+    {
+        using var doc = JsonDocument.Parse(llmResp.Content);
+        var json = JsonSerializer.Deserialize<JsonElement>(llmResp.Content);
+        var response = new
+        {
+            requestId = Guid.NewGuid().ToString(),
+            analysis = json,
+            // promptHash = loaded.Hash, TODO probably add it
+            totalTokens = llmResp.TotalTokens
+        };
+        return Results.Ok(response);
+    }
+    catch (JsonException jex)
+    {
+        logger.LogWarning(jex, "LLM returned non-JSON for /analyze");
+        return Results.BadRequest(new { error = "LLM returned invalid JSON", raw = llmResp.Content });
+    }
 });
 
+app.MapPost("/correction", async (HttpRequest request, PromptBuilder promptBuilder) =>
+{
+    var getPromptOperation = await promptBuilder.BuildCorrectionPromptAsync(request);
+    if (getPromptOperation.IsCancelled)
+    {
+        return Results.BadRequest(new { error = getPromptOperation.Error });
+    }
+
+    var prompt = getPromptOperation.Result;
+    logger.LogInformation("Calling LLM for /correction prompt = {Prompt}.", prompt);
+
+    LlmResponse llmResp;
+    try
+    {
+        llmResp = await llm.CallRawAsync(prompt, CancellationToken.None);
+    }
+    catch (Exception ex)
+    {
+        logger.LogError(ex, "LLM call failed (correction)");
+        return Results.StatusCode(502);
+    }
+
+    try
+    {
+        using var doc = JsonDocument.Parse(llmResp.Content);
+        var json = JsonSerializer.Deserialize<JsonElement>(llmResp.Content);
+        var response = new
+        {
+            // requestId = body.RequestId,
+            correctedAnalysis = json.GetProperty("correctedAnalysis"),
+            needsReanalysis = json.TryGetProperty("needsReanalysis", out var nr) ? nr.GetBoolean() : false,
+            reanalysisReason = json.TryGetProperty("reanalysisReason", out var rr) ? rr.GetString() : null,
+            confidenceNote = json.TryGetProperty("confidenceNote", out var cn) ? cn.GetString() : null,
+            // promptHash = loaded.Hash,
+            totalTokens = llmResp.TotalTokens
+        };
+        return Results.Ok(response);
+    }
+    catch (JsonException jex)
+    {
+        logger.LogWarning(jex, "LLM returned non-JSON for /correction");
+        return Results.BadRequest(new { error = "LLM returned invalid JSON", raw = llmResp.Content });
+    }
+});
 
 app.Run();

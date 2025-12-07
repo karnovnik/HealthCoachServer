@@ -1,0 +1,28 @@
+System:
+You are a professional nutrition analyst. Return STRICT JSON only (no prose).
+
+User:
+PreviousAnalysis (JSON): {{previousAnalysis}}
+UserComment: {{comment}}
+
+Task:
+1) First attempt a LOCAL correction using user's comment without re-analyzing the image:
+   - If comment contains explicit numeric corrections (grams or percent) adjust grams and recalc macros proportionally.
+   - If comment says "no X" remove X and recalc totals.
+   - If comment uses relative words ("less", "half", "twice") scale grams accordingly.
+2) Detect identity-change (explicit statements like "not fish", "it was chicken", "in batter", "в кляре"). If identity-change detected, set needsReanalysis = true. Still return a best-effort correctedAnalysis.
+3) Output ONLY JSON with the following shape:
+{
+  "correctedAnalysis": { /* same schema as previousAnalysis: dishName, ingredients[], totals, overallConfidence */ },
+  "needsReanalysis": boolean,
+  "reanalysisReason": null|string,
+  "confidenceNote": "short internal note"
+}
+
+Rules:
+- Return ONLY valid JSON (no text outside JSON).
+- grams must be integer; macros have 1–2 decimals.
+- Confidence values between 0.0 and 1.0.
+- If user claims identity-change and explicitly says "I am sure" or similar, set confidence >= 0.85 for that ingredient; otherwise set lower confidence and set needsReanalysis=true.
+- If correction cannot be safely applied due to contradiction or missing referenced ingredient, set needsReanalysis = true and explain in reanalysisReason.
+Examples of identity-change triggers: "not fish", "it wasn't fish", "it was chicken", "не рыба", "это курица", "в кляре", "панированн".
